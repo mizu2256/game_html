@@ -1,0 +1,35 @@
+#BPM: 120,
+
+#START,
+#3,4,3,4,3,4,3,4
+#[2,4],3,[2,5],4,[3,5],4,[2,5],3
+#END,
+
+
+// json will be...
+
+{
+  "notes" : [
+    {
+      "time": 0.000,
+      "lane": 3,
+      "type": "tap"
+    },
+    {
+      "time": 0.250,
+      "lane": 4,
+      "type": "tap"
+    }
+    {
+      "time": 0.500,
+      "lane": 3,
+      "type": "tap"
+    }
+    {
+      "time": 0.750,
+      "lane": 4,
+      "type": "tap"
+    }
+    ...(making it)
+  ]
+}

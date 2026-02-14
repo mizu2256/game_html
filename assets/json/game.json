@@ -1,0 +1,24 @@
+{
+  "notes": [
+    {
+      "time": 500.0,
+      "lane": 3,
+      "type": "critical"
+    },
+    {
+      "time": 1000.0,
+      "lane": 4,
+      "type": "tap"
+    },
+    {
+      "time": 1500.0,
+      "lane": 3,
+      "type": "critical"
+    },
+    {
+      "time": 2000.0,
+      "lane": 4,
+      "type": "critical"
+    }
+  ]
+}
