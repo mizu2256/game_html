@@ -1,18 +1,20 @@
 let tempData, exportData;
 
 function parseScore(rawText) {
-  let beat, bpm;
+  let beat, bpm; // musicはここから削除してresultで管理します
 
-  const lines = rawText.split("\n"); // 改行で分割
+  const lines = rawText.split("\n");
   const result = {
     startBpm: 0,
+    music: "", // 初期値を設定
+    offset: 0,
     notes: [],
   };
 
   lines.forEach((line) => {
-    line = line.trim(); // 前後の空白を削除
+    line = line.trim();
 
-    // BPMを抽出 (#BPM: 120,)
+    // BPMの抽出
     if (line.startsWith("#BPM:")) {
       const bpmMatch = line.match(/#BPM:\s*(\d+)/);
       if (bpmMatch) {
@@ -21,6 +23,7 @@ function parseScore(rawText) {
       }
     }
 
+    // OFFSETの抽出
     if (line.startsWith("#OFFSET:")) {
       const offsetMatch = line.match(/#OFFSET:\s*(\d+)/);
       if (offsetMatch) {
@@ -28,21 +31,25 @@ function parseScore(rawText) {
       }
     }
 
-    // 譜面部分を抽出 (#(8)3,4,3,4...)
-    // 先頭が #( で始まる行を対象にする
+    // MUSICの抽出
+    if (line.startsWith("#MUSIC:")) {
+      const musicMatch = line.match(/#MUSIC:\s*(.+)/);
+      if (musicMatch) {
+        // 重要：result.music に代入し、末尾のカンマを除去
+        result.music = musicMatch[1].replace(/,$/, "").trim();
+      }
+    }
+
+    // ノーツ部分の抽出
     if (line.startsWith("#(")) {
       const beatMatch = line.match(/^#\((\d+)\)/);
       if (beatMatch) beat = parseInt(beatMatch[1]);
-      // 例: "#(8)3,4,[2,5]" -.> "3,4,[2,5]" の部分を取り出す
       const noteData = line.replace(/^#\(\d+\)/, "").replace(/,$/, "");
-
-      // カンマで区切って配列にする
-      // ※ [2,5] のような同時押しも1要素として扱う工夫が必要
       const notesArray = noteData.split(",").filter((n) => n !== "");
 
-      notesArray.forEach((notesArray) => {
+      notesArray.forEach((note) => { // 引数名が重複していたので修正
         result.notes.push({
-          lane: notesArray,
+          lane: note,
           beat: beat,
           bpm: bpm,
         });
@@ -56,75 +63,65 @@ function parseScore(rawText) {
 function exportScore(data) {
   let eachFlag = false;
   let timer = parseInt(data.offset, 10);
-  const finalData = { notes: [] };
+  const finalData = {
+    music: "",
+    notes: [],
+  };
+  
+  // レーンごとのロングノーツ開始時間を保持
   let activeLongNotes = {};
+
+  finalData.music = data.music;
 
   data.notes.forEach((value, index) => {
     let laneValue = value.lane.toString();
-    if (laneValue.includes("[")) {
-      eachFlag = true;
-      laneValue = laneValue.replace("[", "");
-    }
-    if (laneValue.includes("]")) {
-      eachFlag = false;
-      laneValue = laneValue.replace("]", "");
-    }
+    // [ ] (同時押し) 判定
+    if (laneValue.includes("[")) { eachFlag = true; laneValue = laneValue.replace("[", ""); }
+    if (laneValue.includes("]")) { eachFlag = false; laneValue = laneValue.replace("]", ""); }
 
     let type = "tap";
     let laneNum = 0;
 
-    if (laneValue.includes("l")) {
-      type = "long";
-      laneNum = parseInt(laneValue.replace("l", ""));
-    } else if (laneValue.includes("e")) {
-      type = "end";
-      laneNum = parseInt(laneValue.replace("e", ""));
-    } else if (laneValue.includes("c")) {
-      type = "critical";
-      laneNum = parseInt(laneValue.replace("c", ""));
-    } else {
-      laneNum = parseInt(laneValue);
-    }
+    // タイプ判定
+    if (laneValue.includes("l")) { type = "long"; laneNum = parseInt(laneValue.replace("l", "")); }
+    else if (laneValue.includes("e")) { type = "end"; laneNum = parseInt(laneValue.replace("e", "")); }
+    else if (laneValue.includes("c")) { type = "critical"; laneNum = parseInt(laneValue.replace("c", "")); }
+    else { laneNum = parseInt(laneValue); }
 
     if (laneNum !== 0) {
-      const currentNote = { time: timer, lane: laneNum, type: type };
-
       if (type === "long") {
-        activeLongNotes[laneNum] = timer; // 開始時間を記録
-        finalData.notes.push(currentNote);
-      } else if (type === "end") {
+        activeLongNotes[laneNum] = timer; 
+        finalData.notes.push({ time: timer, lane: laneNum, type: "long" });
+      } 
+      else if (type === "end") {
         const startTime = activeLongNotes[laneNum];
         if (startTime !== undefined) {
           const bpm = value.bpm;
-          const msPer8th = 30000 / bpm; // 8分音符1つ分のミリ秒 (60000 / bpm / 2)
+          const msPer8th = 30000 / bpm; // 8分音符間隔
 
-          // --- 音楽的な8分音符グリッドへのスナップ ---
-          // offsetを基準とした、startTime直後の「音楽的な8分音符」のタイミングを探す
-          // timer % msPer8th だとズレる可能性があるので、(現在時間 - offset) で計算
-          let firstTickTime =
-            Math.ceil((startTime - data.offset) / msPer8th) * msPer8th +
-            data.offset;
+          // --- Tickの先行生成ロジック ---
+          let tickTime = Math.ceil((startTime - data.offset) / msPer8th) * msPer8th + data.offset;
+          
+          // 始点と重なりすぎるのを防ぐ
+          if (tickTime < startTime + msPer8th) { tickTime += msPer8th; }
 
-          // もし始点と重なりすぎたら次のTickから開始
-          if (firstTickTime < startTime + msPer8th / 32) {
-            firstTickTime += msPer8th;
-          }
-
-          let tickTime = firstTickTime;
-          // 終点(timer)の少し手前まで、正確な8分音符間隔で刻む
-          while (tickTime < timer) {
+          // 終点(timer)より手前までTickを追加
+          while (tickTime < timer - 10) { // 微小な誤差を考慮して-10ms
             finalData.notes.push({
               time: tickTime,
               lane: laneNum,
-              type: "tick",
+              type: "tick"
             });
             tickTime += msPer8th;
           }
           delete activeLongNotes[laneNum];
         }
-        finalData.notes.push(currentNote);
-      } else {
-        finalData.notes.push(currentNote);
+        // 終点ノーツを追加
+        finalData.notes.push({ time: timer, lane: laneNum, type: "end" });
+      } 
+      else {
+        // tap, critical
+        finalData.notes.push({ time: timer, lane: laneNum, type: type });
       }
     }
 
@@ -135,6 +132,7 @@ function exportScore(data) {
     }
   });
 
+  // 時間順に並び替え（重要：Tickを途中に挿入したため）
   finalData.notes.sort((a, b) => a.time - b.time);
   return finalData;
 }

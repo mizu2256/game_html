@@ -494,63 +494,49 @@ function displayCombo() {
   }
 }
 
+
 function spawnNotes() {
-  const currentTime = performance.now() - startTime;
+  const currentTime = (audioContext.currentTime - audioStartTime) * 1000;
   if (!data) return;
 
-  // data.notes[0] が currentTime を超えるまでループ
   while (data.notes.length > 0 && data.notes[0].time <= currentTime) {
-    const noteData = data.notes[0];
+    const noteData = data.notes.shift(); // 先頭を取り出す
 
-    if (noteData.type === "long") {
-      // 同じレーンの次の end を探す
-      const endIndex = data.notes.findIndex(
-        (n) =>
-          n.lane === noteData.lane &&
-          n.type === "end" &&
-          n.time >= noteData.time
-      );
-
-      if (endIndex !== -1) {
-        const endNote = data.notes[endIndex];
-        const duration = endNote.time - noteData.time;
+    switch (noteData.type) {
+      case "long":
+        // ロング開始。後続のTickやEndが親を参照できるように保持
+        // durationは後でEndが来た時に計算するのではなく、
+        // 描画クラス側で「Endが来るまで描く」か、事前に計算しておく必要があります。
+        // ここでは、描画クラスに渡すために「対になるEnd」を一度だけ探します。
+        const endNote = data.notes.find(n => n.lane === noteData.lane && n.type === "end");
+        const duration = endNote ? (endNote.time - noteData.time) : 0;
+        
         const newLong = createLongNote(noteData.lane, noteData.time, duration);
+        activeLongNotesByLane[noteData.lane] = newLong;
+        break;
 
-        if (duration > 166.66) {
-          activeLongNotesByLane[noteData.lane] = newLong;
-        } else {
-          newLong.isShort = true;
+      case "tick":
+        // すでにデータにあるTickを生成
+        if (activeLongNotesByLane[noteData.lane]) {
+          createTickNote(noteData.lane, noteData.time, activeLongNotesByLane[noteData.lane]);
         }
+        break;
 
-        // ★重要: long を生成したら、そのペアとなる end は「もう spawn させない」ために配列から消す
-        // ただし、後で別のノーツがズレないように慎重に削除
-        data.notes.splice(endIndex, 1);
-      }
+      case "end":
+        // ロング終了。最後のTickとしての判定を行い、参照を消す
+        if (activeLongNotesByLane[noteData.lane]) {
+          createTickNote(noteData.lane, noteData.time, activeLongNotesByLane[noteData.lane]);
+          delete activeLongNotesByLane[noteData.lane];
+        }
+        break;
 
-      data.notes.shift(); // 自身の long を消す
-    } else if (noteData.type === "tick") {
-      const parent = activeLongNotesByLane[noteData.lane];
-      if (parent) {
-        createTickNote(noteData.lane, noteData.time, parent);
-      }
-      data.notes.shift();
-    } else if (noteData.type === "end") {
-      // 既に long の生成時に splice で消されているはずだが、
-      // 万が一残っていた場合や、単体で存在する場合の保険
-      const parent = activeLongNotesByLane[noteData.lane];
-      if (parent) {
-        createTickNote(noteData.lane, noteData.time, parent);
-        delete activeLongNotesByLane[noteData.lane];
-      }
-      data.notes.shift();
-    } else {
-      // tap や critical の処理
-      if (noteData.type === "critical") {
+      case "critical":
         createCriticalNote(noteData.lane, noteData.time);
-      } else {
+        break;
+
+      default: // tap
         clone(noteData.lane, noteData.time);
-      }
-      data.notes.shift();
+        break;
     }
   }
 }
@@ -683,6 +669,19 @@ async function loadChart() {
   }
 }
 
+// warm-UP
+function warmup() {
+    console.log("Warming up...");
+    // 偽のノーツを100個くらい作って一瞬で更新・削除させる
+    for(let i=0; i<100; i++) {
+        const dummy = new MovingObject(0, 0, 90, 30, "#0000ff00", 0, 10.2, 0, 0, 0);
+        dummy.update(ctx, canvas);
+    }
+    // Canvasのテキスト描画も重いので一度実行しておく
+    ctx.font = "72px Arial";
+    ctx.fillText("Warmup", -100, -100); 
+}
+
 // 以下音声ロード・再生
 async function loadAudio(url) {
   const response = await fetch(url);
@@ -726,29 +725,28 @@ async function init() {
   await loadChart();
   audioBuffer = await loadAudio("./assets/music/music.mp3"); // 曲のパスを指定
 
+  // ラグ防止措置
+  warmup();
+
   // 2. ブラウザの音声再生制限を解除するための待機（画面クリックで開始）
   console.log("Click to Start");
   window.addEventListener("mousedown", startBuffer, { once: true });
 }
 
+let audioStartTime; // 追加
 async function startBuffer() {
   if (audioContext.state === "suspended") {
     await audioContext.resume();
   }
-
-  // 3. 音楽再生の準備
+  
   musicSource = audioContext.createBufferSource();
   musicSource.buffer = audioBuffer;
   musicSource.connect(audioContext.destination);
 
-  // 4. 再生開始と時間の記録
-  // audioContext.currentTime は 0 から始まるとは限らないため、
-  // 開始した瞬間の値を startTime として記録します
-  startTime = performance.now();
-  // 音声をつけたいなら↓のコメントアウトを解除
-  // musicSource.start(audioContext.currentTime + 1);
-
-  // 5. ゲームループ開始
+  // 重要：音楽が鳴り始める「オーディオクロック上の時間」を記録
+  audioStartTime = audioContext.currentTime;
+  musicSource.start(audioStartTime + 1);
+  
   animate();
 }
 

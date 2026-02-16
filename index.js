@@ -16,7 +16,7 @@ app.on("ready", () => {
   mainWindow.loadFile("./index.html");
 
   // ファイルを読み込んで中身をコンソールに表示、または画面に送る
-  const filePath = path.join(__dirname, "./assets/notesData/ikiru.txt"); // 読み込みたいファイル名
+  const filePath = path.join(__dirname, "./assets/notesData/demo.txt"); // 読み込みたいファイル名
 
   if (fs.existsSync(filePath)) {
     const content = fs.readFileSync(filePath, "utf8");
@@ -33,15 +33,16 @@ app.on("ready", () => {
 // メインプロセスの修正例
 ipcMain.on("save-json", (event, data) => {
   // ユーザーデータフォルダを取得（Windowsなら AppData/Roaming/アプリ名）
-  const userDataPath = app.getPath('userData');
-  const dirPath = path.join(userDataPath, "json");
-  const savePath = path.join(dirPath, "output.json");
+  // const userDataPath = app.getPath('userData');
+  // const dirPath = path.join(userDataPath, "json");
+  // const savePath = path.join(dirPath, "output.json");
+  const savePath = path.join(__dirname, 'assets/json', 'output.json')
 
   try {
     // フォルダがない場合は作成する
-    if (!fs.existsSync(dirPath)) {
-      fs.mkdirSync(dirPath, { recursive: true });
-    }
+    // if (!fs.existsSync(dirPath)) {
+    //   fs.mkdirSync(dirPath, { recursive: true });
+    // }
 
     const jsonString = JSON.stringify(data, null, 2);
     fs.writeFileSync(savePath, jsonString, "utf8");
