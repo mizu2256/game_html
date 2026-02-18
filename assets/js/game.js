@@ -12,7 +12,7 @@ class MovingObject {
     dy,
     colIndex,
     spawnTime,
-    targetTime
+    targetTime,
   ) {
     this.x = x; // X座標
     this.y = y; // Y座標
@@ -43,18 +43,32 @@ class MovingObject {
   }
 
   // 更新メソッド: 次のフレームの状態を計算
+  // MovingObject クラス内
   update(ctx, canvas) {
-    // 通常ノーツ(tap)だけがこの画面外消去ロジックを使うようにする
-    if (this.type !== "long" && this.type !== "tick") {
-      if (this.y + this.height > canvas.height) {
-        judge = "MISS";
-        FAST_OR_LATE = "";
-        gameResult.ms++;
-        this.isRemovable = true;
-        combo = 0;
-        judgeTimer = 20;
+    // すでに削除フラグが立っている、または Tick の場合はスキップ
+    if (this.isRemovable || this.type === "tick") {
+      this.y += this.dy;
+      this.draw(ctx);
+      return;
+    }
+
+    // 通常ノーツ(tap / critical)の自動MISS判定
+    if (this.type !== "long") {
+      // 判定ライン + 最大ヒット距離 を超えたら確実に MISS
+      if (this.y > defaultJudgeLine + maxHitDistance) {
+        if (!this.isRemovable) {
+          // 二重判定防止
+          judge = "MISS";
+          FAST_OR_LATE = "";
+          gameResult.ms++;
+          debug_NOTES++; // ここでカウント
+          this.isRemovable = true;
+          combo = 0;
+          judgeTimer = 20;
+        }
       }
     }
+
     this.y += this.dy;
     this.draw(ctx);
   }
@@ -72,7 +86,7 @@ class LongNoteObject extends MovingObject {
     colIndex,
     spawnTime,
     targetTime,
-    duration
+    duration,
   ) {
     super(x, y, width, height, color, dx, dy, colIndex, spawnTime, targetTime);
     this.type = "long";
@@ -80,36 +94,50 @@ class LongNoteObject extends MovingObject {
     this.duration = duration;
     this.isHolding = false;
     this.endTime = targetTime + duration;
-    this.headProcessed = false; // ヒットまたは見逃しが確定したか
-    this.headMissed = false; // 見逃しカウント済みか
+    this.headProcessed = false;
+    this.headMissed = false;
   }
 
   draw(ctx) {
     const pixelsPerMs = (this.dy * 60) / 1000;
     const currentTime = performance.now();
 
-    // 描画上の「頭」のY座標を決定
-    // 押している間は判定ラインに固定、離している間は本来の落下位置(this.y)
+    // 1. 描画上の「お尻」の残存時間を計算
+    const timeLeft = this.endTime - currentTime;
+
+    // --- 修正ポイント ---
+    // もし終了まであとわずか（例: 10ms以内）なら描画をスキップする
+    // これにより、見た目上は「判定ラインに吸い込まれるように」消えます。
+    // かといって isRemovable は true にしないので、判定（Tick）は死にません。
+    if (timeLeft < 83.33) return;
+
     let drawHeadY = this.isHolding
       ? defaultJudgeLine
       : this.y + defaultNotesHeight / 2;
 
-    // お尻のY座標を計算（これは常に一定の速度で降りてくる）
-    const tailY = defaultJudgeLine - (this.endTime - currentTime) * pixelsPerMs;
+    const tailY = defaultJudgeLine - timeLeft * pixelsPerMs;
+
+    // 物理的にお尻が頭を越えた場合も描画終了
+    if (tailY >= drawHeadY) return;
+
     const currentBodyHeight = drawHeadY - tailY;
 
-    // お尻が頭（判定ライン）を通り過ぎたら描画終了
-    if (currentBodyHeight <= 0) return;
-
-    // 1. 帯（ボディ）
+    // 帯（ボディ）
     ctx.fillStyle = "rgba(0, 255, 0, 0.5)";
     ctx.fillRect(this.x, tailY, this.width, currentBodyHeight);
 
-    // 2. 始点（頭）
-    ctx.fillStyle = "#0000ff";
-    ctx.fillRect(this.x, drawHeadY - this.height / 2, this.width, this.height);
+    // 始点（頭）
+    if (drawHeadY < canvas.height + 50) {
+      ctx.fillStyle = "#0000ff";
+      ctx.fillRect(
+        this.x,
+        drawHeadY - this.height / 2,
+        this.width,
+        this.height,
+      );
+    }
 
-    // 3. 終点（尻尾）
+    // 終点（尻尾）
     ctx.fillStyle = "#00ff00";
     ctx.fillRect(this.x, tailY, this.width, 5);
   }
@@ -119,25 +147,16 @@ class LongNoteObject extends MovingObject {
     this.y += this.dy;
 
     // 1. 頭の見逃し判定
-    if (
-      !this.headProcessed &&
-      !this.isHolding &&
-      this.y > defaultJudgeLine + maxHitDistance
-    ) {
-      processJudge(performance.now(), this);
+    if (!this.headProcessed && this.y > defaultJudgeLine + maxHitDistance) {
       this.headProcessed = true;
+      processJudge(currentTime, this);
     }
 
-    // 2. 消去ロジック
-    if (this.isShort) {
-      // 疑似ロングは頭の判定が終われば即削除
-      if (this.headProcessed) this.isRemovable = true;
-    } else {
-      // 【修正】時間ベースで「これ以上描画・判定する必要がない」タイミングで消去
-      // endTime (お尻が判定ラインに重なる時間) に少し猶予(100ms)を持たせる
-      if (currentTime > this.endTime - 83.33) {
-        this.isRemovable = true;
-      }
+    // 2. 削除ロジックの修正
+    // 判定猶予（108.33ms）が過ぎるまで、オブジェクトを消さない
+    // これにより、途中で離しても「再度押されるチャンス」が維持されます
+    if (currentTime > this.endTime + 108.33) {
+      this.isRemovable = true;
     }
 
     this.draw(ctx);
@@ -156,7 +175,7 @@ class TickNoteObject extends MovingObject {
     colIndex,
     spawnTime,
     targetTime,
-    parentLongNote
+    parentLongNote,
   ) {
     super(x, y, width, height, color, dx, dy, colIndex, spawnTime, targetTime);
     this.type = "tick";
@@ -168,28 +187,34 @@ class TickNoteObject extends MovingObject {
   }
 
   update(ctx, canvas) {
-    // 判定ライン（defaultJudgeLine）に到達したかチェック
-    // y座標が判定ラインを超えたら判定処理
-    if (this.y >= defaultJudgeLine) {
+    // --- 修正ポイント：判定タイミングのオフセット ---
+    // typeが "tick" でも、実際には spawnNotes で生成される際に
+    // 末端（end由来のtick）かどうかを判別できるようにするか、
+    // あるいは一律で「判定ラインの少し手前」で判定を完了させます。
+
+    // 判定猶予の境界（GOODの末尾など）に合わせて 108.33ms 手前で判定を終わらせる
+    const isEndTick = true; // 今回は end 由来の Tick として扱います
+    const judgeOffset = isEndTick ? 100 : 0; // 100ms手前で判定
+
+    if (this.y >= defaultJudgeLine - judgeOffset * ((this.dy * 60) / 1000)) {
       if (this.parentLongNote && this.parentLongNote.isHolding) {
-        // 押されている：PERFECT+
         judge = "PERFECT+";
-        judgeTimer = 20; // 中継点では文字を出さないならコメントアウト
         gameResult.pp++;
+        notesScore = notesScore + 101;
         combo++;
+        maxCombo = Math.max(maxCombo, combo);
       } else {
-        // 押されていない：MISS
+        // 離していれば MISS
         judge = "MISS";
-        FAST_OR_LATE = "";
-        judgeTimer = 20;
         gameResult.ms++;
         combo = 0;
       }
-      this.isRemovable = true; // 判定が終わったら消す
+      debug_NOTES++;
+      judgeTimer = 20;
+      this.isRemovable = true;
     }
 
     this.y += this.dy;
-    // drawは呼ばない
   }
 }
 
@@ -206,8 +231,13 @@ const ctx = canvas.getContext("2d");
 // ノーツ保管
 let objectsArray = [];
 
+// スコアについての変数
+let totalNotes = 0;
+let notesScore = 0;
+let score = 0;
+
 // ノーツスピード
-const notesSpeed = 10.2;
+const notesSpeed = 10.1;
 
 // 最大MISS幅
 const maxHitDistance = notesSpeed * 2 * 7.5;
@@ -252,13 +282,24 @@ let gameResult = {
   ms: 0,
 };
 
+let fastNotes = 0;
+let lateNotes = 0;
+
+let debug_NOTES = 0;
+
 let combo = 0;
 let maxCombo = 0;
 
 // 音声管理変数
+let music_DATA = "";
 const audioContext = new (window.AudioContext || window.webkitAudioContext)();
 let audioBuffer = null;
 let musicSource = null;
+
+// リザルト表示用変数
+let finishGame = false;
+let finishGameTime = 0;
+const resultName = ["pp", "pf", "gr", "gd", "ms"];
 
 // ここから先はfunction記載ゾーン
 
@@ -292,8 +333,8 @@ function clone(line, time) {
       dy,
       colIndex,
       spawnTime,
-      targetTime
-    )
+      targetTime,
+    ),
   );
 }
 
@@ -326,8 +367,8 @@ function createCriticalNote(line, time) {
       dy,
       colIndex,
       spawnTime,
-      targetTime
-    )
+      targetTime,
+    ),
   );
 }
 
@@ -355,7 +396,7 @@ function createLongNote(line, time, duration) {
     colIndex,
     spawnTime,
     targetTime,
-    duration
+    duration,
   );
 
   objectsArray.push(newObj);
@@ -386,8 +427,8 @@ function createTickNote(lane, time, parentLongNote) {
       colIndex,
       spawnTime,
       targetTime,
-      parentLongNote
-    )
+      parentLongNote,
+    ),
   );
 }
 
@@ -475,11 +516,15 @@ function displayJudge() {
 
 function displayCombo() {
   if (combo != 0) {
-    if (gameResult.gr + gameResult.gd + gameResult.ms == 0) {
-      if (gameResult.pf == 0) {
-        ctx.fillStyle = "#ff0088";
+    if (gameResult.gd + gameResult.ms == 0) {
+      if (gameResult.gr == 0) {
+        if (gameResult.pf == 0) {
+          ctx.fillStyle = "#ff0088";
+        } else {
+          ctx.fillStyle = "#ff4444";
+        }
       } else {
-        ctx.fillStyle = "#ff4444";
+        ctx.fillStyle = "#ffaa00";
       }
     } else {
       ctx.fillStyle = "#0000ff";
@@ -494,6 +539,13 @@ function displayCombo() {
   }
 }
 
+function displayScore() {
+  ctx.fillStyle = "#000000";
+  ctx.font = "36px Arial";
+  ctx.fillText(`SCORE: ${score}`, 10, 45);
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#0000ff";
+}
 
 function spawnNotes() {
   const currentTime = (audioContext.currentTime - audioStartTime) * 1000;
@@ -508,9 +560,11 @@ function spawnNotes() {
         // durationは後でEndが来た時に計算するのではなく、
         // 描画クラス側で「Endが来るまで描く」か、事前に計算しておく必要があります。
         // ここでは、描画クラスに渡すために「対になるEnd」を一度だけ探します。
-        const endNote = data.notes.find(n => n.lane === noteData.lane && n.type === "end");
-        const duration = endNote ? (endNote.time - noteData.time) : 0;
-        
+        const endNote = data.notes.find(
+          (n) => n.lane === noteData.lane && n.type === "end",
+        );
+        const duration = endNote ? endNote.time - noteData.time : 0;
+
         const newLong = createLongNote(noteData.lane, noteData.time, duration);
         activeLongNotesByLane[noteData.lane] = newLong;
         break;
@@ -518,14 +572,22 @@ function spawnNotes() {
       case "tick":
         // すでにデータにあるTickを生成
         if (activeLongNotesByLane[noteData.lane]) {
-          createTickNote(noteData.lane, noteData.time, activeLongNotesByLane[noteData.lane]);
+          createTickNote(
+            noteData.lane,
+            noteData.time,
+            activeLongNotesByLane[noteData.lane],
+          );
         }
         break;
 
       case "end":
         // ロング終了。最後のTickとしての判定を行い、参照を消す
         if (activeLongNotesByLane[noteData.lane]) {
-          createTickNote(noteData.lane, noteData.time, activeLongNotesByLane[noteData.lane]);
+          createTickNote(
+            noteData.lane,
+            noteData.time,
+            activeLongNotesByLane[noteData.lane],
+          );
           delete activeLongNotesByLane[noteData.lane];
         }
         break;
@@ -551,26 +613,39 @@ document.addEventListener("keydown", (event) => {
   keyStates[key] = true;
 
   let hitObject = null;
-  let minDistance = Infinity;
 
-  // --- 1. ロングノーツの復帰判定 (時間軸で判定) ---
-  for (let i = objectsArray.length - 1; i >= 0; i--) {
+  // --- ロングノーツの復帰・ヒット判定 ---
+  // すでに頭を処理(headProcessed)していても、時間内なら isHolding を復活させる
+  for (let i = 0; i < objectsArray.length; i++) {
     const obj = objectsArray[i];
     if (obj.colIndex === targetColIndex && obj.type === "long") {
-      // 始点(targetTime)から終点(endTime)までの間にいれば復帰対象
-      if (pressTime >= obj.targetTime && pressTime <= obj.endTime) {
+      // 始点から終点（の少し後）までの間にいれば復帰対象
+      if (
+        pressTime >= obj.targetTime - 108.33 &&
+        pressTime <= obj.endTime + 108.33
+      ) {
         hitObject = obj;
+
+        // 既に頭を叩いている場合は、isHolding を true に戻すだけで終了
+        if (hitObject.headProcessed) {
+          hitObject.isHolding = true;
+          return; // 通常ノーツ判定に行かせない
+        }
         break;
       }
     }
   }
 
-  // --- 2. 通常ノーツの判定 (距離で判定: hitObjectがまだ無い場合のみ) ---
+  // --- 通常ノーツの判定 (hitObjectがまだ見つかっていない場合) ---
   if (!hitObject) {
+    let minDistance = Infinity;
     for (let i = objectsArray.length - 1; i >= 0; i--) {
       const obj = objectsArray[i];
-      if (obj.colIndex === targetColIndex && obj.type !== "tick") {
-        // tickは距離判定しない
+      if (
+        obj.colIndex === targetColIndex &&
+        obj.type !== "tick" &&
+        !obj.isRemovable
+      ) {
         const distance = Math.abs(defaultJudgeLine - obj.y);
         if (distance <= maxHitDistance && distance < minDistance) {
           minDistance = distance;
@@ -580,21 +655,15 @@ document.addEventListener("keydown", (event) => {
     }
   }
 
-  // --- 3. ヒット時の処理 ---
+  // --- ヒット時の新規処理 ---
   if (hitObject) {
     if (hitObject.type === "long") {
-      // ★既に判定済みのロングノーツ（押し直しなど）は無視する
-      if (hitObject.headProcessed) return;
-
       hitObject.isHolding = true;
-      hitObject.headProcessed = true; // 判定完了フラグを立てる
-      isLongTap = true;
-
+      hitObject.headProcessed = true;
       processJudge(pressTime, hitObject);
     } else {
       hitObject.isRemovable = true;
       processJudge(pressTime, hitObject);
-      isLongTap = false;
     }
   }
 });
@@ -603,13 +672,16 @@ document.addEventListener("keydown", (event) => {
 function processJudge(pressTime, hitObject) {
   const timeDifference = pressTime - hitObject.targetTime;
   const timeDifferenceAbs = Math.abs(timeDifference);
+  let isUpdateFL = false;
 
   FAST_OR_LATE = timeDifference < 0 ? "FAST" : "LATE";
+  debug_NOTES++;
 
   if (hitObject.type == "critical") {
     if (timeDifferenceAbs <= 108.33) {
       judge = "PERFECT+";
       gameResult.pp++;
+      notesScore = notesScore + 101;
       combo++;
     } else {
     }
@@ -617,26 +689,43 @@ function processJudge(pressTime, hitObject) {
     if (timeDifferenceAbs <= 33.33) {
       judge = "PERFECT+";
       gameResult.pp++;
+      notesScore = notesScore + 101;
       combo++;
     } else if (timeDifferenceAbs <= 50.0) {
       judge = "PERFECT";
       gameResult.pf++;
+      notesScore = notesScore + 100;
+      isUpdateFL = true;
       combo++;
     } else if (timeDifferenceAbs <= 83.33) {
       judge = "GREAT";
       gameResult.gr++;
+      notesScore = notesScore + 70;
+      isUpdateFL = true;
       combo++;
     } else if (timeDifferenceAbs <= 108.33) {
       judge = "GOOD";
       gameResult.gd++;
+      notesScore = notesScore + 30;
+      isUpdateFL = true;
       combo = 0;
     } else {
       judge = "MISS";
+      FAST_OR_LATE = "";
       gameResult.ms++;
       combo = 0;
     }
   }
 
+  if (isUpdateFL) {
+    if (FAST_OR_LATE == "FAST") {
+      fastNotes++;
+    } else if (FAST_OR_LATE == "LATE") {
+      lateNotes++;
+    }
+  }
+
+  maxCombo = Math.max(maxCombo, combo);
   judgeTimer = 20;
 }
 
@@ -671,15 +760,15 @@ async function loadChart() {
 
 // warm-UP
 function warmup() {
-    console.log("Warming up...");
-    // 偽のノーツを100個くらい作って一瞬で更新・削除させる
-    for(let i=0; i<100; i++) {
-        const dummy = new MovingObject(0, 0, 90, 30, "#0000ff00", 0, 10.2, 0, 0, 0);
-        dummy.update(ctx, canvas);
-    }
-    // Canvasのテキスト描画も重いので一度実行しておく
-    ctx.font = "72px Arial";
-    ctx.fillText("Warmup", -100, -100); 
+  console.log("Warming up...");
+  // 偽のノーツを100個くらい作って一瞬で更新・削除させる
+  for (let i = 0; i < 100; i++) {
+    const dummy = new MovingObject(0, 0, 90, 30, "#0000ff00", 0, 10.2, 0, 0, 0);
+    dummy.update(ctx, canvas);
+  }
+  // Canvasのテキスト描画も重いので一度実行しておく
+  ctx.font = "72px Arial";
+  ctx.fillText("Warmup", -100, -100);
 }
 
 // 以下音声ロード・再生
@@ -689,28 +778,112 @@ async function loadAudio(url) {
   return await audioContext.decodeAudioData(arrayBuffer);
 }
 
+// 以下リザルト画面
+function displayGameResult() {
+  let temp = "";
+  // score
+  ctx.font = "64px Arial";
+  ctx.fillStyle = "#000000";
+  ctx.textAlign = "left";
+  ctx.fillText(`SCORE`, 120, 100);
+  ctx.font = "72px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText(score, 600, 100);
+
+  // result_txt
+  ctx.font = "40px Arial";
+  ctx.fillStyle = "#ff0088";
+  ctx.fillText("PERFECT+", 300, 300);
+  ctx.fillStyle = "#ff4444";
+  ctx.fillText("PERFECT", 300, 360);
+  ctx.fillStyle = "#ffaa00";
+  ctx.fillText("GREAT", 300, 420);
+  ctx.fillStyle = "#0000ff";
+  ctx.fillText("GOOD", 300, 480);
+  ctx.fillStyle = "#000000";
+  ctx.fillText("MISS", 300, 540);
+
+  resultName.forEach((name, i) => {
+    ctx.fillText(gameResult[name], 540, 300 + 60 * i);
+  });
+
+  // MAX COMBO
+  ctx.fillText("MAX COMBO", 900, 270);
+  ctx.font = "56px Arial";
+  ctx.fillText(maxCombo, 900, 340);
+
+  // CLEAR_CHECK
+  ctx.font = "42px Arial";
+  if (gameResult.pp == totalNotes) {
+    ctx.fillStyle = "#ff0088";
+    temp = "ALL PERFECT+!!";
+  } else if (gameResult.pp + gameResult.pf == totalNotes) {
+    ctx.fillStyle = "#ff4444";
+    temp = "ALL PERFECT!!";
+  } else if (gameResult.pp + gameResult.pf + gameResult.gr == totalNotes) {
+    ctx.fillStyle = "#ffaa00";
+    temp = "FULL COMBO!";
+  } else {
+    temp = "";
+  }
+
+  if (temp != "") {
+    ctx.fillText(temp, 900, 405);
+  }
+
+  // FAST_LATE
+  ctx.font = "36px Arial";
+  ctx.fillStyle = "#0000ff";
+  ctx.fillText("FAST", 830, 500);
+  ctx.fillStyle = "#ff0000";
+  ctx.fillText("LATE", 830, 550);
+
+  ctx.fillStyle = "#000000";
+  ctx.fillText(fastNotes, 970, 500);
+  ctx.fillText(lateNotes, 970, 550);
+}
+
 // 最後にanimate関数
 function animate() {
+  // リザルト画面テスト用
+  // finishGame = true;
+  // リザルト表示テスト用
+  // gameResult.pp = totalNotes;
+
   // 前のフレームをクリア
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-
   displayBackground();
 
-  displayJudge();
+  if (!finishGame) {
+    displayJudge();
+    spawnNotes();
+    judgeLine();
+    notesLine();
+    displayCombo();
 
-  spawnNotes();
+    for (let i = 0; i < objectsArray.length; i++) {
+      objectsArray[i].update(ctx, canvas);
 
-  judgeLine();
-  notesLine();
-  displayCombo();
-
-  for (let i = 0; i < objectsArray.length; i++) {
-    objectsArray[i].update(ctx, canvas);
-
-    if (objectsArray[i].isRemovable) {
-      objectsArray.splice(i, 1);
-      i--;
+      if (objectsArray[i].isRemovable) {
+        objectsArray.splice(i, 1);
+        i--;
+      }
     }
+
+    score = Math.floor((notesScore / totalNotes) * 10000);
+    displayScore();
+
+    if (data.notes.length == 0 && objectsArray.length == 0) {
+      if (finishGameTime == 0) {
+        finishGameTime = performance.now();
+      } else if (performance.now() > finishGameTime + 1000) {
+        finishGame = true;
+      }
+    } else {
+      finishGameTime = 0;
+    }
+  } else {
+    displayGameResult();
   }
 
   // 次のフレーム
@@ -723,7 +896,13 @@ function animate() {
 async function init() {
   // 1. 譜面と音源を両方ロード
   await loadChart();
-  audioBuffer = await loadAudio("./assets/music/music.mp3"); // 曲のパスを指定
+  music_DATA = data.music;
+  console.log(music_DATA);
+  audioBuffer = await loadAudio(`./assets/music/${music_DATA}`); // 曲のパスを指定
+
+  // totalNotesを計測
+  totalNotes = data.notes.length;
+  console.log(totalNotes);
 
   // ラグ防止措置
   warmup();
@@ -738,7 +917,7 @@ async function startBuffer() {
   if (audioContext.state === "suspended") {
     await audioContext.resume();
   }
-  
+
   musicSource = audioContext.createBufferSource();
   musicSource.buffer = audioBuffer;
   musicSource.connect(audioContext.destination);
@@ -746,7 +925,7 @@ async function startBuffer() {
   // 重要：音楽が鳴り始める「オーディオクロック上の時間」を記録
   audioStartTime = audioContext.currentTime;
   musicSource.start(audioStartTime + 1);
-  
+
   animate();
 }
 

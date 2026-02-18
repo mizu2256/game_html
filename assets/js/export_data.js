@@ -106,7 +106,7 @@ function exportScore(data) {
           if (tickTime < startTime + msPer8th) { tickTime += msPer8th; }
 
           // 終点(timer)より手前までTickを追加
-          while (tickTime < timer - 10) { // 微小な誤差を考慮して-10ms
+          while (tickTime < timer - 500) { // ★500ms手前でTickが生成されないようにした
             finalData.notes.push({
               time: tickTime,
               lane: laneNum,
