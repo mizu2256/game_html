@@ -149,12 +149,35 @@ ipcRenderer.on("file-data", (event, data) => {
   ipcRenderer.send("save-json", exportData);
 
   // 保存完了の合図を受け取った後の処理
-  ipcRenderer.on("save-complete", () => {
-    console.log("保存が完了したので、ゲームを起動します...");
+ipcRenderer.on("save-complete", async () => {
+    console.log("保存完了。システムを順次ロードします...");
 
-    // game.jsを動的に読み込む
-    const script = document.createElement("script");
-    script.src = "./assets/js/game.js"; // ゲーム本体のパス
-    document.body.appendChild(script);
+    const scripts = [
+      "./assets/js/settings.js",
+      "./assets/js/variables.js",
+      "./assets/js/classes/MovingObject.js",
+      "./assets/js/classes/LongNoteObject.js",
+      "./assets/js/classes/TickNoteObject.js",
+      "./assets/js/function/UserInterface.js",
+      "./assets/js/function/system.js",
+      "./assets/js/game.js" // 最後に本体
+    ];
+
+    // 順番に読み込んで、すべて終わったら init() を呼ぶ
+    for (const src of scripts) {
+      await loadScript(src);
+    }
+    console.log("全スクリプトのロード完了");
   });
 });
+
+// スクリプトを読み込むための補助関数
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = reject;
+    document.body.appendChild(script);
+  });
+}

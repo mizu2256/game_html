@@ -1,5 +1,5 @@
 #BPM: 158,
-#OFFSET: 1385,
+#OFFSET: 1915,
 #MUSIC: music.mp3,
 
 #START,
